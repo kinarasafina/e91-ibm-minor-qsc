@@ -1,43 +1,106 @@
-from qiskit import QuantumCircuit
+import os
+from qiskit import QuantumCircuit, transpile
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.transpiler import generate_preset_pass_manager
-from qiskit_ibm_runtime import EstimatorV2 as Estimator
- 
-# Create a new circuit with two qubits
+from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2 as Estimator, SamplerV2 as Sampler
+from qiskit_aer import AerSimulator
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Configuration: Set to True for IBM Cloud, False for local simulation
+USE_IBM_CLOUD = False
+
+# Create a new circuit with two qubits (Bell state)
 qc = QuantumCircuit(2)
- 
+
 # Add a Hadamard gate to qubit 0
 qc.h(0)
- 
+
 # Perform a controlled-X gate on qubit 1, controlled by qubit 0
 qc.cx(0, 1)
- 
-# Measure both qubits (adds two classical bits automatically)
-qc.measure_all()
 
-# Return a drawing of the circuit using MatPlotLib ("mpl").
-# These guides are written by using Jupyter notebooks, which
-# display the output of the last line of each cell.
-# If you're running this in a script, use `print(qc.draw())` to
-# print a text drawing.
+print("-------circuit--------")
 print(qc.draw())
 
-# Try to run the circuit on a local Aer simulator (if available)
-try:
-	# Qiskit Aer may be provided either via qiskit_aer or qiskit.Aer
-	try:
-		from qiskit_aer import AerSimulator
-		from qiskit import transpile
-		simulator = AerSimulator()
-	except Exception:
-		from qiskit import Aer
-		from qiskit import transpile
-		simulator = Aer.get_backend('aer_simulator')
-
-	compiled = transpile(qc, simulator)
-	job = simulator.run(compiled, shots=1024)
-	result = job.result()
-	counts = result.get_counts()
-	print("Counts:", counts)
-except Exception as e:
-	print("Simulator not available or run failed:", e)
+if USE_IBM_CLOUD:
+    print("\n--- Using IBM Quantum Cloud ---")
+    
+    service = QiskitRuntimeService(
+        token=os.getenv("API_KEY"),
+        instance=os.getenv("INSTANCE_NAME"),
+    )
+    
+    # Set up observables to measure entanglement
+    observables_labels = ["IZ", "IX", "ZI", "XI", "ZZ", "XX"]
+    observables = [SparsePauliOp(label) for label in observables_labels]
+    
+    # Select backend
+    try:
+        backend = service.least_busy(simulator=False, operational=True)
+        print(f"Using backend: {backend.name}")
+    except:
+        from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+        backend = FakeManilaV2()
+        print(f"Using simulator: {backend.name}")
+    
+    # Optimize circuit for the backend
+    pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+    isa_circuit = pm.run(qc)
+    
+    # Map observables to the circuit layout
+    mapped_observables = [
+        observable.apply_layout(isa_circuit.layout) for observable in observables
+    ]
+    
+    print("\n-------estimator results (expectation values)--------")
+    # Run using Estimator primitive to get expectation values
+    estimator = Estimator(mode=backend)
+    estimator.options.default_shots = 5000
+    job = estimator.run([(isa_circuit, mapped_observables)])
+    result = job.result()
+    
+    # Display expectation values
+    pub_result = result[0]
+    values = pub_result.data.evs
+    
+    print("Observable expectation values:")
+    for label, value in zip(observables_labels, values):
+        print(f"  <{label}> = {value:.3f}")
+    
+    print(f"\nJob ID: {job.job_id()}")
+    print("\nNote: For entangled Bell state |00⟩+|11⟩, expect:")
+    print("  Independent measurements (IZ, IX, ZI, XI) ≈ 0")
+    print("  Correlations (ZZ, XX) ≈ 1")
+    
+    # Also run with Sampler to get measurement counts
+    print("\n-------sampler results (measurement counts)--------")
+    qc_with_meas = QuantumCircuit(2)
+    qc_with_meas.h(0)
+    qc_with_meas.cx(0, 1)
+    qc_with_meas.measure_all()
+    
+    isa_circuit_meas = pm.run(qc_with_meas)
+    sampler = Sampler(mode=backend)
+    job_sampler = sampler.run([isa_circuit_meas], shots=1024)
+    result_sampler = job_sampler.result()
+    
+    counts = result_sampler[0].data.meas.get_counts()
+    print("Measurement counts:", counts)
+    print("Expected: roughly equal counts of '00' and '11' (entanglement)")
+    
+else:
+    print("\n--- Using Local Simulator ---")
+    
+    # Measure both qubits
+    qc.measure_all()
+    
+    simulator = AerSimulator()
+    compiled = transpile(qc, simulator)
+    job = simulator.run(compiled, shots=1024)
+    result = job.result()
+    counts = result.get_counts()
+    
+    print("\n-------measurement counts--------")
+    print("Counts:", counts)
+    print("Expected: roughly equal counts of '00' and '11' (entanglement)")
