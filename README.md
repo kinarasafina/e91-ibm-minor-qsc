@@ -16,3 +16,9 @@
 
 3. Change the `USE_IBM_CLOUD` variable to True in the assignment of choice
 4. Run the assignments
+
+## Contributors
+
+- Andrei Niculescu
+- Kinara Safina Maharani
+- Mario Petkov
